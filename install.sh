@@ -1,7 +1,7 @@
 #!/usr/bin/env sh
 set -eu
 
-RAW_BASE_URL="https://raw.githubusercontent.com/zhanglongx/git-all/main"
+RAW_BASE_URL="https://raw.githubusercontent.com/zhanglongx/git-all/refs/heads/main/"
 TARGET="/usr/local/bin/git-all"
 TMP_FILE="$(mktemp)"
 
