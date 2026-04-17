@@ -1,0 +1,236 @@
+#!/usr/bin/env python3
+from __future__ import annotations
+
+import argparse
+import os
+import shutil
+import subprocess
+import sys
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Sequence
+
+VERSION = "0.1.0"
+VALID_FILTERS = frozenset({"dirty", "clean", "no-upstream"})
+RESET = "\033[0m"
+STATUS_COLORS = {
+    "dirty": "\033[31m",
+    "clean": "\033[32m",
+    "no-upstream": "\033[33m",
+}
+
+
+@dataclass(frozen=True)
+class RepoStatus:
+    path: Path
+    label: str
+    status: str
+    ahead: int | None = None
+    behind: int | None = None
+
+
+def build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(
+        prog="git-all",
+        description="View the status of multiple local Git repositories.",
+    )
+    parser.add_argument(
+        "-f",
+        "--filter",
+        dest="filters",
+        metavar="FILTERS",
+        help="Comma-separated filters: dirty, clean, no-upstream",
+    )
+    parser.add_argument(
+        "path",
+        nargs="?",
+        help="Directory to scan. Defaults to ~/Workdir when it exists, otherwise the current directory.",
+    )
+    parser.add_argument(
+        "--version",
+        action="version",
+        version=f"%(prog)s {VERSION}",
+    )
+    return parser
+
+
+def parse_filters(raw_filters: str | None, parser: argparse.ArgumentParser) -> set[str] | None:
+    if raw_filters is None:
+        return None
+
+    parts = [part.strip() for part in raw_filters.split(",") if part.strip()]
+    if not parts:
+        parser.error("at least one filter must be provided")
+
+    invalid = sorted(set(parts) - VALID_FILTERS)
+    if invalid:
+        parser.error(
+            "invalid filter value(s): "
+            + ", ".join(invalid)
+            + ". Valid values: dirty, clean, no-upstream"
+        )
+
+    return set(parts)
+
+
+def resolve_scan_root(path_arg: str | None, parser: argparse.ArgumentParser) -> Path:
+    if path_arg is not None:
+        candidate = Path(path_arg).expanduser()
+    else:
+        workdir = Path.home() / "Workdir"
+        candidate = workdir if workdir.is_dir() else Path.cwd()
+
+    if not candidate.exists():
+        parser.error(f"path does not exist: {candidate}")
+    if not candidate.is_dir():
+        parser.error(f"path is not a directory: {candidate}")
+
+    return candidate.resolve()
+
+
+def ensure_git_available() -> None:
+    if shutil.which("git") is None:
+        print("git-all: git executable not found in PATH", file=sys.stderr)
+        raise SystemExit(1)
+
+
+def is_git_repository(path: Path) -> bool:
+    git_entry = path / ".git"
+    return git_entry.is_dir() or git_entry.is_file()
+
+
+def discover_repositories(root: Path) -> list[Path]:
+    repositories: list[Path] = []
+
+    for current_root, dirnames, _filenames in os.walk(root):
+        dirnames.sort()
+        current_path = Path(current_root)
+
+        if is_git_repository(current_path):
+            repositories.append(current_path)
+            dirnames[:] = []
+
+    return repositories
+
+
+def repo_label(repo_path: Path, scan_root: Path) -> str:
+    relative = repo_path.relative_to(scan_root)
+    return "." if str(relative) == "." else relative.as_posix()
+
+
+def run_git(repo_path: Path, args: Sequence[str]) -> subprocess.CompletedProcess[str]:
+    try:
+        return subprocess.run(
+            ["git", "-C", str(repo_path), *args],
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+    except FileNotFoundError as error:
+        raise RuntimeError("git executable not found") from error
+
+
+def read_repo_status(repo_path: Path, scan_root: Path) -> RepoStatus:
+    dirty_process = run_git(repo_path, ["status", "--porcelain"])
+    if dirty_process.returncode != 0:
+        raise RuntimeError(dirty_process.stderr.strip() or dirty_process.stdout.strip() or "git status failed")
+
+    is_dirty = bool(dirty_process.stdout.strip())
+
+    upstream_process = run_git(
+        repo_path,
+        ["rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{upstream}"],
+    )
+    if upstream_process.returncode != 0:
+        return RepoStatus(
+            path=repo_path,
+            label=repo_label(repo_path, scan_root),
+            status="no-upstream",
+        )
+
+    counts_process = run_git(repo_path, ["rev-list", "--left-right", "--count", "HEAD...@{upstream}"])
+    if counts_process.returncode != 0:
+        raise RuntimeError(
+            counts_process.stderr.strip() or counts_process.stdout.strip() or "git rev-list failed"
+        )
+
+    counts = counts_process.stdout.strip().split()
+    if len(counts) != 2:
+        raise RuntimeError(f"unexpected rev-list output: {counts_process.stdout.strip()!r}")
+
+    ahead, behind = (int(count) for count in counts)
+    return RepoStatus(
+        path=repo_path,
+        label=repo_label(repo_path, scan_root),
+        status="dirty" if is_dirty else "clean",
+        ahead=ahead,
+        behind=behind,
+    )
+
+
+def collect_statuses(scan_root: Path) -> list[RepoStatus]:
+    statuses: list[RepoStatus] = []
+
+    for repo_path in discover_repositories(scan_root):
+        try:
+            statuses.append(read_repo_status(repo_path, scan_root))
+        except RuntimeError as error:
+            print(f"git-all: warning: skipped {repo_path}: {error}", file=sys.stderr)
+
+    return sorted(statuses, key=lambda item: item.label)
+
+
+def color_enabled() -> bool:
+    return sys.stdout.isatty()
+
+
+def colorize_status(status: str, width: int) -> str:
+    padded_status = status.ljust(width)
+    if not color_enabled():
+        return padded_status
+    return f"{STATUS_COLORS[status]}{padded_status}{RESET}"
+
+
+def render_statuses(statuses: Sequence[RepoStatus]) -> str:
+    if not statuses:
+        return ""
+
+    label_width = max(len(status.label) for status in statuses)
+    status_width = max(len(status.status) for status in statuses)
+    lines: list[str] = []
+
+    for status in statuses:
+        label = status.label.ljust(label_width)
+        status_text = colorize_status(status.status, status_width)
+
+        if status.status == "no-upstream":
+            lines.append(f"{label}   {status_text}")
+        else:
+            lines.append(
+                f"{label}   {status_text}   ahead {status.ahead}   behind {status.behind}"
+            )
+
+    return "\n".join(lines)
+
+
+def main() -> int:
+    parser = build_parser()
+    args = parser.parse_args()
+    selected_filters = parse_filters(args.filters, parser)
+    scan_root = resolve_scan_root(args.path, parser)
+
+    ensure_git_available()
+    statuses = collect_statuses(scan_root)
+
+    if selected_filters is not None:
+        statuses = [status for status in statuses if status.status in selected_filters]
+
+    output = render_statuses(statuses)
+    if output:
+        print(output)
+
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
