@@ -47,7 +47,7 @@ git-all --version
 Install via curl:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/zhanglongx/git-all/main/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/zhanglongx/git-all/refs/heads/main/install.sh | bash
 ```
 
 Install location:
