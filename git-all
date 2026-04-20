@@ -10,7 +10,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Sequence
 
-VERSION = "0.1.0"
+VERSION = "0.1.1"
 RESET = "\033[0m"
 STATUS_COLORS = {
     "dirty": "\033[31m",
