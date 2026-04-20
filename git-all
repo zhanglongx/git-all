@@ -11,7 +11,6 @@ from pathlib import Path
 from typing import Sequence
 
 VERSION = "0.1.0"
-VALID_FILTERS = frozenset({"dirty", "clean", "no-upstream"})
 RESET = "\033[0m"
 STATUS_COLORS = {
     "dirty": "\033[31m",
@@ -35,11 +34,10 @@ def build_parser() -> argparse.ArgumentParser:
         description="View the status of multiple local Git repositories.",
     )
     parser.add_argument(
-        "-f",
-        "--filter",
-        dest="filters",
-        metavar="FILTERS",
-        help="Comma-separated filters: dirty, clean, no-upstream",
+        "-A",
+        "--all",
+        action="store_true",
+        help="Show all repositories, including clean ones.",
     )
     parser.add_argument(
         "path",
@@ -52,25 +50,6 @@ def build_parser() -> argparse.ArgumentParser:
         version=f"%(prog)s {VERSION}",
     )
     return parser
-
-
-def parse_filters(raw_filters: str | None, parser: argparse.ArgumentParser) -> set[str] | None:
-    if raw_filters is None:
-        return None
-
-    parts = [part.strip() for part in raw_filters.split(",") if part.strip()]
-    if not parts:
-        parser.error("at least one filter must be provided")
-
-    invalid = sorted(set(parts) - VALID_FILTERS)
-    if invalid:
-        parser.error(
-            "invalid filter value(s): "
-            + ", ".join(invalid)
-            + ". Valid values: dirty, clean, no-upstream"
-        )
-
-    return set(parts)
 
 
 def resolve_scan_root(path_arg: str | None, parser: argparse.ArgumentParser) -> Path:
@@ -216,14 +195,13 @@ def render_statuses(statuses: Sequence[RepoStatus]) -> str:
 def main() -> int:
     parser = build_parser()
     args = parser.parse_args()
-    selected_filters = parse_filters(args.filters, parser)
     scan_root = resolve_scan_root(args.path, parser)
 
     ensure_git_available()
     statuses = collect_statuses(scan_root)
 
-    if selected_filters is not None:
-        statuses = [status for status in statuses if status.status in selected_filters]
+    if not args.all:
+        statuses = [status for status in statuses if status.status in {"dirty", "no-upstream"}]
 
     output = render_statuses(statuses)
     if output:

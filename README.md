@@ -21,14 +21,15 @@ repo-d   dirty        ahead 1   behind 4
 ## Usage
 
 ```bash
-git-all -f <filter> [PATH]
 git-all [PATH]
+git-all -A [PATH]
 git-all --version
 ```
 
-- `-f`, `--filter`
-  - Filter by status: `dirty`, `clean`, `no-upstream`
-  - Multiple values can be combined, e.g. `-f dirty,clean`
+- Default behavior
+  - Only show repositories with `dirty` or `no-upstream` status
+- `-A`, `--all`
+  - Show all repositories, including `clean`
 - `PATH`
   - Optional scan directory
   - If omitted: defaults to `~/Workdir` if it exists, otherwise the current directory
